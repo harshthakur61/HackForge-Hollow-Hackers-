@@ -1,0 +1,14 @@
+fastapi
+pandas
+numpy
+scipy
+scikit-learn
+xgboost>=2.0
+statsmodels
+joblib
+pydantic
+psycopg[binary]
+pytest
+python-dotenv
+jupyter
+matplotlib
