@@ -4,16 +4,23 @@
  */
 
 import React from "react";
-import { Activity, AlertTriangle, Shield, Sun, Moon } from "lucide-react";
+import { Activity, AlertTriangle, Shield, Sun, Moon, Sliders } from "lucide-react";
 import { useReplayStore } from "../store/useReplayStore";
 import { formatSimClock } from "../utils/formatters";
 
 interface TopBarProps {
   isDarkMode: boolean;
   onToggleTheme: () => void;
+  activeView: "replay" | "stress";
+  onSelectView: (view: "replay" | "stress") => void;
 }
 
-export const TopBar: React.FC<TopBarProps> = ({ isDarkMode, onToggleTheme }) => {
+export const TopBar: React.FC<TopBarProps> = ({
+  isDarkMode,
+  onToggleTheme,
+  activeView,
+  onSelectView,
+}) => {
   const connection = useReplayStore((s) => s.connection);
   const simTime = useReplayStore((s) => s.replayStatus.simTime);
   const validationBadges = useReplayStore((s) => s.validationBadges);
@@ -94,6 +101,35 @@ export const TopBar: React.FC<TopBarProps> = ({ isDarkMode, onToggleTheme }) => 
                 ? "Reconnecting"
                 : "Engine Down"}
             </span>
+          </div>
+        </div>
+
+        {/* Navigation Switcher: Replay Dashboard vs Stress Lab */}
+        <div className="flex items-center gap-2">
+          <div className="inline-flex rounded-lg border border-border bg-muted/40 p-1">
+            <button
+              id="nav-replay"
+              onClick={() => onSelectView("replay")}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition-all ${
+                activeView === "replay"
+                  ? "bg-card text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              Replay Dashboard
+            </button>
+            <button
+              id="nav-stress-lab"
+              onClick={() => onSelectView("stress")}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition-all flex items-center gap-1.5 ${
+                activeView === "stress"
+                  ? "bg-primary text-primary-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              <Sliders className="w-3.5 h-3.5" />
+              Stress Lab
+            </button>
           </div>
         </div>
 

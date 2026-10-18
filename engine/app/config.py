@@ -72,3 +72,22 @@ def get_target_quantile(
         Cu = haircut_pct / 100.0
 
     return Cu / (Cu + Co)
+
+
+# Strategic Sleeve Configuration (Tier 2 2Y Bonds & Tier 3 Equity Index)
+SLEEVE_USD = float(os.getenv("SLEEVE_USD", "50000000.0"))
+# Labelled per problem statement, not in the dataset; used only for ex-ante break-even
+EQUITY_EXPECTED_APY = float(os.getenv("EQUITY_EXPECTED_APY", "10.0"))
+LIQ_HORIZON_DAYS = int(os.getenv("LIQ_HORIZON_DAYS", "30"))
+YIELD_SHOCK_BP = float(os.getenv("YIELD_SHOCK_BP", "100.0"))
+REPO_FLOOR = float(os.getenv("REPO_FLOOR", "0.20"))
+RISK_TOLERANCE_T = float(os.getenv("RISK_TOLERANCE_T", "0.05"))
+Z99 = 2.326
+
+SLEEVE_PRESETS = {
+    "conservative": {"repo": 1.0, "bonds": 0.0, "equity": 0.0},
+    "income": {"repo": 0.50, "bonds": 0.50, "equity": 0.0},
+    "balanced": {"repo": 0.40, "bonds": 0.40, "equity": 0.20},
+    "growth": {"repo": 0.20, "bonds": 0.30, "equity": 0.50},
+}
+PRESET_LABEL = "in-sample illustration, not tuned"

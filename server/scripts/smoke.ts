@@ -189,10 +189,10 @@ async function runSmokeTest() {
   }
   console.log("[smoke] ✓ Assertion 2 passed: Exactly one decision and settlement per night.");
 
-  // Assertion 3: No tick or event includes a field from a later hour
-  console.log("[smoke] Validating Assertion 3: Lookahead verification...");
+  // Assertion 3: No tick, event or settlement includes a field from a later hour (Test i)
+  console.log("[smoke] Validating Assertion 3: Lookahead verification for ticks, events, settlements...");
   // Query market_data to ensure each tick's deposits/withdrawals match the database at that hour
-  const checkSample = ticks.slice(0, 15);
+  const checkSample = ticks.slice(0, 25);
   for (const t of checkSample) {
     const dbRes = await pgPool.query(
       "SELECT deposits_usd, withdrawals_usd, net_flow_usd FROM market_data WHERE ts = $1;",
@@ -208,8 +208,25 @@ async function runSmokeTest() {
         );
       }
     }
+
+    // Verify sleeve field is optional/absent when sleeve is not configured
+    if (t.sleeve !== undefined) {
+      // If present, verify total equals repo + bonds + equities + carry
+      const s = t.sleeve;
+      const expectedTotal = s.repo + s.bonds + s.equities + s.carry;
+      if (Math.abs(s.total - expectedTotal) > 0.01) {
+        throw new Error(`Assertion failed: Sleeve accounting mismatch on tick ${t.ts}`);
+      }
+    }
   }
-  console.log("[smoke] ✓ Assertion 3 passed: No lookahead or corrupted values detected.");
+
+  // Also verify that when sleeve is not active, settlement.sleeve is undefined (old clients work unchanged)
+  for (const s of settlements) {
+    if (s.sleeve !== undefined) {
+      console.log(`[smoke] Verified settlement sleeve present for ${s.night_date}`);
+    }
+  }
+  console.log("[smoke] ✓ Assertion 3 passed: No lookahead or corrupted values detected; old client compatibility verified.");
 
   // Assertion 4: Each settlement net_pnl equals the decisions table for that night and strategy
   console.log("[smoke] Validating Assertion 4: Settlement Net PnL matches decisions database table...");

@@ -25,6 +25,18 @@ export interface SettledNightRecord {
   actual_required_usd: number;
   covered: boolean;
   cumulative: Record<string, StrategyKpi>;
+  sleeve?: Record<string, any>;
+}
+
+export interface SleevePoint {
+  ts: string;
+  repo: number;
+  bonds: number;
+  equities: number;
+  carry: number;
+  total: number;
+  benchmark: number;
+  cum_excess: number;
 }
 
 export interface CurrentNightSlice {
@@ -57,6 +69,16 @@ export interface ReplayStoreState {
     pool?: number;
   };
 
+  // Strategic Sleeve Configuration & Stream
+  sleeveConfig: {
+    preset?: string;
+    weights?: { repo: number; bonds: number; equity: number };
+    sleeve_usd?: number;
+  };
+  sleevePoints: SleevePoint[];
+  latestSleevePoint: SleevePoint | null;
+  latestSleeveSettlement: Record<string, any> | null;
+
   // Current Night Slice (Reset on each new decision)
   currentNight: CurrentNightSlice;
 
@@ -77,6 +99,8 @@ export interface ReplayStoreState {
   setReplayStatus: (status: ReplayStatus) => void;
   setPendingConfig: (cfg: Partial<ReplayStoreState["pendingConfig"]>) => void;
   clearPendingConfig: () => void;
+  setSleeveConfig: (cfg: Partial<ReplayStoreState["sleeveConfig"]>) => void;
+  resetSleevePoints: () => void;
   setSelectedDecisionDate: (date: string | null) => void;
 
   // Reducer Actions for WebSocket events
@@ -108,6 +132,12 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
   validationBadges: [],
   replayStatus: initialReplayStatus,
   pendingConfig: {},
+  sleeveConfig: {
+    preset: "risk_budget",
+  },
+  sleevePoints: [],
+  latestSleevePoint: null,
+  latestSleeveSettlement: null,
   currentNight: initialCurrentNight,
   settledHistory: [],
   latestCumulativeKpis: null,
@@ -137,12 +167,32 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
   setReplayStatus: (status) =>
     set({
       replayStatus: status,
+      ...(status.state === "idle"
+        ? {
+            sleevePoints: [],
+            latestSleevePoint: null,
+            latestSleeveSettlement: null,
+            currentNight: initialCurrentNight,
+          }
+        : {}),
     }),
 
   setPendingConfig: (cfg) =>
     set((state) => ({
       pendingConfig: { ...state.pendingConfig, ...cfg },
     })),
+
+  setSleeveConfig: (cfg) =>
+    set((state) => ({
+      sleeveConfig: { ...state.sleeveConfig, ...cfg },
+    })),
+
+  resetSleevePoints: () =>
+    set({
+      sleevePoints: [],
+      latestSleevePoint: null,
+      latestSleeveSettlement: null,
+    }),
 
   clearPendingConfig: () => set({ pendingConfig: {} }),
 
@@ -161,27 +211,76 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
       pendingConfig: {},
     }),
 
-  // 2. Ticks append in strict chronological order; out-of-order ticks are ignored
+  // 2. Ticks append in strict chronological order; out-of-order ticks are ignored.
+  // Overnight ticks (17:00 to 08:00) belong to the night chart.
+  // Daytime and nighttime ticks both stream sleeve data (valued 24/7).
+  // A new replay resets the sleeve points.
   handleTick: (tick) =>
     set((state) => {
+      const nextStatus = {
+        ...state.replayStatus,
+        simTime: tick.ts,
+      };
+
+      // 2a. Stream sleeve points continuously across daytime and night
+      let nextSleevePoints = state.sleevePoints;
+      let nextLatestSleeve = state.latestSleevePoint;
+      if (tick.sleeve) {
+        const incomingTs = new Date(tick.ts).getTime();
+        const lastSleeveTs =
+          state.sleevePoints.length > 0
+            ? new Date(state.sleevePoints[state.sleevePoints.length - 1].ts).getTime()
+            : -Infinity;
+
+        if (incomingTs > lastSleeveTs) {
+          const pt: SleevePoint = {
+            ts: tick.ts,
+            repo: tick.sleeve.repo,
+            bonds: tick.sleeve.bonds,
+            equities: tick.sleeve.equities,
+            carry: tick.sleeve.carry,
+            total: tick.sleeve.total,
+            benchmark: tick.sleeve.benchmark,
+            cum_excess: tick.sleeve.cum_excess,
+          };
+          nextSleevePoints = [...state.sleevePoints, pt];
+          nextLatestSleeve = pt;
+        }
+      }
+
+      const hour = parseInt(tick.ts.slice(11, 13), 10);
+      const isOvernightHour = hour >= 17 || hour <= 8;
+
+      if (!isOvernightHour) {
+        return {
+          replayStatus: nextStatus,
+          sleevePoints: nextSleevePoints,
+          latestSleevePoint: nextLatestSleeve,
+        };
+      }
+
       const ticks = state.currentNight.hourlyTicks;
       if (ticks.length > 0) {
         const lastTickTs = new Date(ticks[ticks.length - 1].ts).getTime();
         const incomingTs = new Date(tick.ts).getTime();
         // Ignore out-of-order or duplicate ticks
         if (incomingTs <= lastTickTs) {
-          return state;
+          return {
+            replayStatus: nextStatus,
+            sleevePoints: nextSleevePoints,
+            latestSleevePoint: nextLatestSleeve,
+          };
         }
       }
+
       return {
         currentNight: {
           ...state.currentNight,
           hourlyTicks: [...ticks, tick],
         },
-        replayStatus: {
-          ...state.replayStatus,
-          simTime: tick.ts,
-        },
+        replayStatus: nextStatus,
+        sleevePoints: nextSleevePoints,
+        latestSleevePoint: nextLatestSleeve,
       };
     }),
 
@@ -203,7 +302,10 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
         (h) => h.night_date === settleEv.night_date
       );
       if (exists) {
-        return { latestCumulativeKpis: settleEv.cumulative };
+        return {
+          latestCumulativeKpis: settleEv.cumulative,
+          latestSleeveSettlement: settleEv.sleeve ?? state.latestSleeveSettlement,
+        };
       }
 
       const newRecord: SettledNightRecord = {
@@ -216,11 +318,13 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
         actual_required_usd: settleEv.actual_required_usd,
         covered: settleEv.covered,
         cumulative: settleEv.cumulative,
+        sleeve: settleEv.sleeve,
       };
 
       return {
         settledHistory: [...state.settledHistory, newRecord],
         latestCumulativeKpis: settleEv.cumulative,
+        latestSleeveSettlement: settleEv.sleeve ?? state.latestSleeveSettlement,
       };
     }),
 
@@ -228,6 +332,10 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
     set({
       replayStatus: initialReplayStatus,
       pendingConfig: {},
+      sleeveConfig: { preset: "risk_budget" },
+      sleevePoints: [],
+      latestSleevePoint: null,
+      latestSleeveSettlement: null,
       currentNight: initialCurrentNight,
       settledHistory: [],
       latestCumulativeKpis: null,
@@ -237,10 +345,10 @@ export const useReplayStore = create<ReplayStoreState>((set) => ({
     }),
 }));
 
-// Selector to get chart data: strictly returns received hourly points up to the latest tick
+// Selector to get night chart data: strictly returns received hourly points up to the latest tick
 export function selectNightChartData(currentNight: CurrentNightSlice) {
-  if (!currentNight.decision) return [];
-  const bufferUsd = currentNight.decision.decision.buffer_usd;
+  if (!currentNight.decision && currentNight.hourlyTicks.length === 0) return [];
+  const bufferUsd = currentNight.decision?.decision?.buffer_usd ?? 0;
 
   return currentNight.hourlyTicks.map((tick) => ({
     ts: tick.ts,
@@ -251,5 +359,26 @@ export function selectNightChartData(currentNight: CurrentNightSlice) {
     buffer: bufferUsd,
     phase: tick.phase,
     simulated: tick.simulated,
+  }));
+}
+
+// Selector to get strategic sleeve chart data: strictly returns received points up to the latest tick
+export function selectSleeveChartData(sleevePoints: SleevePoint[]) {
+  return sleevePoints.map((pt) => ({
+    ts: pt.ts,
+    time: pt.ts.slice(5, 16).replace("T", " "),
+    repo: pt.repo,
+    bonds: pt.bonds,
+    equities: pt.equities,
+    carry: pt.carry,
+    total: pt.total,
+    benchmark: pt.benchmark,
+    cum_excess: pt.cum_excess,
+    repo_m: pt.repo / 1_000_000,
+    bonds_m: pt.bonds / 1_000_000,
+    equities_m: pt.equities / 1_000_000,
+    carry_m: pt.carry / 1_000_000,
+    total_m: pt.total / 1_000_000,
+    benchmark_m: pt.benchmark / 1_000_000,
   }));
 }

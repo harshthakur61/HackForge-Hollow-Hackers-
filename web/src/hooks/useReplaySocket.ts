@@ -18,6 +18,7 @@ import { useReplayStore } from "../store/useReplayStore";
 const SOCKET_URL = import.meta.env.VITE_SOCKET_URL || "http://localhost:4000";
 
 let globalSocket: Socket | null = null;
+let isSocketListening = false;
 
 export function useReplaySocket() {
   const queryClient = useQueryClient();
@@ -43,6 +44,11 @@ export function useReplaySocket() {
 
     const socket = globalSocket;
     socketRef.current = socket;
+
+    if (isSocketListening) {
+      return;
+    }
+    isSocketListening = true;
 
     socket.on("connect", () => {
       setConnection("connected");
@@ -111,7 +117,15 @@ export function useReplaySocket() {
     });
 
     return () => {
-      // Don't disconnect global socket on component re-render to keep singleton alive
+      isSocketListening = false;
+      socket.off("connect");
+      socket.off("disconnect");
+      socket.off("connect_error");
+      socket.off("status");
+      socket.off("decision");
+      socket.off("tick");
+      socket.off("event");
+      socket.off("settlement");
     };
   }, [
     queryClient,
@@ -124,8 +138,15 @@ export function useReplaySocket() {
     handleSettlement,
   ]);
 
+  const sleeveConfig = useReplayStore((s) => s.sleeveConfig);
+
   const startReplay = (fromNight?: string) => {
-    socketRef.current?.emit("replay:start", fromNight ? { fromNight } : {});
+    socketRef.current?.emit("replay:start", {
+      ...(fromNight ? { fromNight } : {}),
+      sleevePreset: sleeveConfig.preset || "risk_budget",
+      ...(sleeveConfig.weights ? { sleeveWeights: sleeveConfig.weights } : {}),
+      ...(sleeveConfig.sleeve_usd ? { sleeveUsd: sleeveConfig.sleeve_usd } : {}),
+    });
   };
 
   const pauseReplay = () => {
@@ -138,6 +159,7 @@ export function useReplaySocket() {
 
   const resetReplay = () => {
     socketRef.current?.emit("replay:reset");
+    useReplayStore.getState().resetAll();
   };
 
   const setSpeed = (tickMs: number) => {

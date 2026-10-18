@@ -1,13 +1,12 @@
 /**
  * StrategyRace.tsx: Cumulative Net P&L line chart over all settled nights comparing:
- * - S0: All-cash
- * - S1: Fixed 10%
- * - S2: Fixed 20%
- * - S3: Static baseline
- * - S4: zero-overdraft policy (default)
- * - S5: cost-optimal (uses overdraft)
- * - S6: oracle (upper bound, not deployable)
- * Features interactive toggleable lines and emphasized policy engine curves.
+ * - S0_all_cash: All Cash (0 risk, 0 repo yield)
+ * - S1_fixed_10: Fixed 10% Reserve (aggressive sweep)
+ * - S2_fixed_20: Fixed 20% Reserve
+ * - S3_static: Static Baseline (P98 fixed buffer)
+ * - S4_policy_zero_overdraft: Zero-Overdraft Policy (conformal buffer)
+ * - S5_policy_cost_optimal: Cost-Optimal Policy (quantile balancing)
+ * - S6_oracle: Oracle (upper bound, not deployable)
  */
 
 import React, { useState } from "react";
@@ -18,15 +17,17 @@ import {
   XAxis,
   YAxis,
   Tooltip,
-  Legend,
 } from "recharts";
-import { Trophy } from "lucide-react";
 import { useReplayStore } from "../store/useReplayStore";
 import { formatMillions, formatCurrency } from "../utils/formatters";
+import ChartFrame from "./common/ChartFrame";
+
+import { STRATEGY_LABELS } from "../utils/labels";
 
 interface StrategyConfig {
   key: string;
-  label: string;
+  apiName: string;
+  subtitle: string;
   color: string;
   strokeWidth: number;
   strokeDasharray?: string;
@@ -36,50 +37,57 @@ interface StrategyConfig {
 const STRATEGIES: StrategyConfig[] = [
   {
     key: "S4_policy_zero_overdraft",
-    label: "S4: zero-overdraft policy (default)",
-    color: "#2563eb",
-    strokeWidth: 3,
+    apiName: "S4_policy_zero_overdraft",
+    subtitle: STRATEGY_LABELS.S4_policy_zero_overdraft,
+    color: "#0284c7",
+    strokeWidth: 2.5,
     defaultVisible: true,
   },
   {
     key: "S5_policy_cost_optimal",
-    label: "S5: cost-optimal (uses overdraft)",
-    color: "#10b981",
-    strokeWidth: 3,
+    apiName: "S5_policy_cost_optimal",
+    subtitle: STRATEGY_LABELS.S5_policy_cost_optimal,
+    color: "#15803d",
+    strokeWidth: 2.5,
     defaultVisible: true,
   },
   {
     key: "S6_oracle",
-    label: "S6: oracle (upper bound, not deployable)",
-    color: "#8b5cf6",
+    apiName: "S6_oracle",
+    subtitle: STRATEGY_LABELS.S6_oracle,
+    color: "#7c3aed",
     strokeWidth: 2,
     strokeDasharray: "4 4",
     defaultVisible: true,
   },
   {
     key: "S3_static",
-    label: "S3: Static baseline",
-    color: "#f59e0b",
+    apiName: "S3_static",
+    subtitle: STRATEGY_LABELS.S3_static,
+    color: "#b45309",
     strokeWidth: 1.5,
     defaultVisible: true,
   },
   {
     key: "S2_fixed_20",
-    label: "S2: Fixed 20%",
-    color: "#f97316",
+    apiName: "S2_fixed_20",
+    subtitle: STRATEGY_LABELS.S2_fixed_20,
+    color: "#ea580c",
     strokeWidth: 1.5,
     defaultVisible: false,
   },
   {
     key: "S1_fixed_10",
-    label: "S1: Fixed 10%",
-    color: "#ef4444",
+    apiName: "S1_fixed_10",
+    subtitle: STRATEGY_LABELS.S1_fixed_10,
+    color: "#b91c1c",
     strokeWidth: 1.5,
     defaultVisible: false,
   },
   {
     key: "S0_all_cash",
-    label: "S0: All-cash",
+    apiName: "S0_all_cash",
+    subtitle: STRATEGY_LABELS.S0_all_cash,
     color: "#64748b",
     strokeWidth: 1.5,
     defaultVisible: false,
@@ -89,7 +97,6 @@ const STRATEGIES: StrategyConfig[] = [
 export const StrategyRace: React.FC = () => {
   const settledHistory = useReplayStore((s) => s.settledHistory);
 
-  // Visibility toggle map
   const [visibleMap, setVisibleMap] = useState<Record<string, boolean>>(() => {
     const init: Record<string, boolean> = {};
     STRATEGIES.forEach((s) => {
@@ -98,97 +105,140 @@ export const StrategyRace: React.FC = () => {
     return init;
   });
 
-  const toggleLine = (key: string) => {
+  const toggleStrategy = (key: string) => {
     setVisibleMap((prev) => ({ ...prev, [key]: !prev[key] }));
   };
 
-  // Build chart dataset from cumulative history
-  const chartData = settledHistory.map((rec) => {
-    const row: Record<string, any> = { date: rec.night_date.slice(5) }; // MM-DD
-    STRATEGIES.forEach((s) => {
-      const kpi = rec.cumulative[s.key];
-      row[s.key] = kpi ? kpi.net_pnl : 0;
-    });
-    return row;
+  // Build chart points from settledHistory
+  const chartData = settledHistory.map((h) => {
+    const pt: Record<string, any> = {
+      date: h.night_date.slice(5),
+      fullDate: h.night_date,
+    };
+    if (h.cumulative) {
+      Object.entries(h.cumulative).forEach(([stratKey, kpi]) => {
+        pt[stratKey] = kpi.net_pnl;
+      });
+    }
+    return pt;
   });
 
-  if (chartData.length < 2) {
+  if (chartData.length === 0) {
     return (
-      <div className="bg-card border border-border rounded-xl p-6 shadow-sm flex flex-col items-center justify-center text-center h-[340px]">
-        <Trophy className="w-10 h-10 text-muted-foreground/40 mb-3" />
-        <h3 className="text-sm font-semibold text-foreground">Multi-Strategy Cumulative Race</h3>
-        <p className="text-xs text-muted-foreground mt-1 max-w-sm">
-          Awaiting settled nights. After 08:00 settlements occur, cumulative Net P&L trajectories will compare policy performance against oracle and static baselines.
+      <div className="bg-surface border border-border-subtle rounded-md p-6 flex flex-col items-center justify-center text-center h-[340px]">
+        <h4 className="text-sm font-semibold text-text-primary">Multi-Strategy Cumulative Performance</h4>
+        <p className="text-xs text-text-secondary mt-1 max-w-sm">
+          Awaiting settled nights. S0 through S6 cumulative net P&L progression will populate here as settlements occur.
         </p>
       </div>
     );
   }
 
+  // Table alternative
+  const tableAlternative = (
+    <table className="w-full text-left text-xs text-text-primary border-collapse">
+      <thead className="bg-subtle text-text-secondary uppercase text-2xs sticky top-0 border-b border-border-subtle">
+        <tr>
+          <th className="py-2 px-3">Date</th>
+          <th className="py-2 px-3 text-right">S4 Net P&L</th>
+          <th className="py-2 px-3 text-right">S5 Net P&L</th>
+          <th className="py-2 px-3 text-right">S6 Oracle</th>
+          <th className="py-2 px-3 text-right">S3 Static</th>
+        </tr>
+      </thead>
+      <tbody className="divide-y divide-border-subtle tabular-nums font-mono">
+        {chartData.slice(-15).map((pt) => (
+          <tr key={pt.fullDate} className="hover:bg-subtle/50">
+            <td className="py-1.5 px-3 font-semibold text-text-primary">{pt.fullDate}</td>
+            <td className="py-1.5 px-3 text-right">{formatCurrency(pt["S4_policy_zero_overdraft"], 0)}</td>
+            <td className="py-1.5 px-3 text-right">{formatCurrency(pt["S5_policy_cost_optimal"], 0)}</td>
+            <td className="py-1.5 px-3 text-right text-purple-600 font-bold">{formatCurrency(pt["S6_oracle"], 0)}</td>
+            <td className="py-1.5 px-3 text-right text-text-muted">{formatCurrency(pt["S3_static"], 0)}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+
   return (
-    <div className="bg-card border border-border rounded-xl p-4 sm:p-5 shadow-sm space-y-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <Trophy className="w-4 h-4 text-primary" />
-          <h3 className="text-sm font-bold text-foreground">
-            Cumulative Net P&L Race ({chartData.length} Nights Settled)
-          </h3>
+    <ChartFrame
+      title="Cumulative Net P&L Race"
+      units="$M USD"
+      period={`${chartData.length} Nights Settled`}
+      lastUpdated={chartData[chartData.length - 1]?.fullDate}
+      tableAlternative={tableAlternative}
+      headerAction={
+        <div className="flex items-center gap-1.5 flex-wrap">
+          {STRATEGIES.map((strat) => {
+            const isVisible = visibleMap[strat.key];
+            return (
+              <button
+                key={strat.key}
+                type="button"
+                onClick={() => toggleStrategy(strat.key)}
+                aria-pressed={isVisible}
+                className={`px-1.5 py-0.5 rounded-xs text-2xs font-mono font-medium border transition-colors ${
+                  isVisible
+                    ? "bg-subtle text-text-primary border-border-strong"
+                    : "opacity-40 text-text-muted border-border-subtle line-through"
+                }`}
+                title={`${strat.apiName}: ${strat.subtitle}`}
+              >
+                <span
+                  className="inline-block w-2 h-2 rounded-full mr-1"
+                  style={{ backgroundColor: strat.color }}
+                  aria-hidden="true"
+                />
+                {strat.key.split("_")[0]}
+              </button>
+            );
+          })}
         </div>
-
-        {/* Legend toggle buttons */}
-        <div className="flex flex-wrap items-center gap-1.5 text-xs">
-          {STRATEGIES.map((s) => (
-            <button
-              key={s.key}
-              onClick={() => toggleLine(s.key)}
-              className={`px-2 py-0.5 rounded text-[10px] font-semibold transition-all border ${
-                visibleMap[s.key]
-                  ? "bg-card text-foreground shadow-2xs border-border"
-                  : "opacity-40 line-through text-muted-foreground border-transparent hover:opacity-70"
-              }`}
-            >
-              <span
-                className="inline-block w-2 h-2 rounded-full mr-1"
-                style={{ backgroundColor: s.color }}
-              />
-              {s.key.split("_")[0]}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      <div className="h-[280px] sm:h-[320px] w-full pt-2">
+      }
+    >
+      <div role="region" className="h-[280px] sm:h-[300px] w-full pt-1" tabIndex={0} aria-label="Strategy Race Chart">
         <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chartData} margin={{ top: 10, right: 20, left: 10, bottom: 0 }}>
+          <LineChart data={chartData} margin={{ top: 10, right: 15, left: 5, bottom: 0 }}>
             <XAxis
               dataKey="date"
-              stroke="#64748b"
+              stroke="var(--text-muted)"
               fontSize={11}
               tickLine={false}
-              axisLine={{ stroke: "var(--border)" }}
+              axisLine={{ stroke: "var(--border-subtle)" }}
             />
             <YAxis
-              stroke="#64748b"
+              stroke="var(--text-muted)"
               fontSize={11}
               tickFormatter={(val) => formatMillions(val, 1)}
               tickLine={false}
-              axisLine={{ stroke: "var(--border)" }}
+              axisLine={{ stroke: "var(--border-subtle)" }}
             />
             <Tooltip
-              content={({ active, payload, label }) => {
+              content={({ active, payload }) => {
                 if (active && payload && payload.length) {
+                  const data = payload[0].payload;
                   return (
-                    <div className="bg-card border border-border p-3 rounded-lg shadow-lg text-xs font-mono space-y-1">
-                      <div className="font-bold text-foreground border-b border-border pb-1">
-                        Night: {label}
+                    <div
+                      role="tooltip"
+                      tabIndex={0}
+                      className="bg-surface border border-border-strong p-2.5 rounded-sm shadow-md text-xs font-mono space-y-1 text-text-primary max-w-xs"
+                    >
+                      <div className="font-bold border-b border-border-subtle pb-1">
+                        Night: {data.fullDate}
                       </div>
-                      {payload.map((item) => (
+                      {STRATEGIES.filter((s) => visibleMap[s.key]).map((strat) => (
                         <div
-                          key={item.dataKey}
-                          className="flex justify-between gap-4"
-                          style={{ color: item.color }}
+                          key={strat.key}
+                          className="flex items-center justify-between gap-3 text-2xs"
+                          style={{ color: strat.color }}
                         >
-                          <span>{item.name}:</span>
-                          <span className="font-bold">{formatCurrency(item.value as number)}</span>
+                          <span className="truncate">
+                            {strat.apiName}
+                            {strat.key === "S6_oracle" && " (upper bound)"}:
+                          </span>
+                          <span className="font-bold tabular-nums">
+                            {formatCurrency(data[strat.key], 0)}
+                          </span>
                         </div>
                       ))}
                     </div>
@@ -197,33 +247,28 @@ export const StrategyRace: React.FC = () => {
                 return null;
               }}
             />
-            <Legend
-              verticalAlign="bottom"
-              height={30}
-              formatter={(value) => (
-                <span className="text-[11px] text-muted-foreground font-medium">{value}</span>
-              )}
-            />
 
-            {STRATEGIES.map(
-              (s) =>
-                visibleMap[s.key] && (
-                  <Line
-                    key={s.key}
-                    type="monotone"
-                    dataKey={s.key}
-                    name={s.label}
-                    stroke={s.color}
-                    strokeWidth={s.strokeWidth}
-                    strokeDasharray={s.strokeDasharray}
-                    dot={false}
-                    activeDot={{ r: 4 }}
-                  />
-                )
-            )}
+            {STRATEGIES.map((strat) => {
+              if (!visibleMap[strat.key]) return null;
+              return (
+                <Line
+                  key={strat.key}
+                  type="monotone"
+                  dataKey={strat.key}
+                  name={`${strat.apiName} (${strat.subtitle})`}
+                  stroke={strat.color}
+                  strokeWidth={strat.strokeWidth}
+                  strokeDasharray={strat.strokeDasharray}
+                  dot={false}
+                  isAnimationActive={false}
+                />
+              );
+            })}
           </LineChart>
         </ResponsiveContainer>
       </div>
-    </div>
+    </ChartFrame>
   );
 };
+
+export default StrategyRace;

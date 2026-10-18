@@ -5,6 +5,9 @@ import {
   formatBps,
   formatPercent,
   formatSimClock,
+  formatDeltaCurrency,
+  formatDeltaNumber,
+  formatHourOffset,
 } from "../utils/formatters";
 
 describe("formatters utility tests", () => {
@@ -44,5 +47,25 @@ describe("formatters utility tests", () => {
       date: "—",
       time: "—",
     });
+  });
+
+  it("formats delta currency with explicit plus/minus signs", () => {
+    expect(formatDeltaCurrency(50000.25)).toBe("+$50,000.25");
+    expect(formatDeltaCurrency(-12500)).toBe("-$12,500.00");
+    expect(formatDeltaCurrency(0)).toBe("$0.00");
+    expect(formatDeltaCurrency(null)).toBe("—");
+  });
+
+  it("formats delta number with plus/minus signs", () => {
+    expect(formatDeltaNumber(5)).toBe("+5");
+    expect(formatDeltaNumber(-3)).toBe("-3");
+    expect(formatDeltaNumber(0)).toBe("0");
+    expect(formatDeltaNumber(null)).toBe("—");
+  });
+
+  it("formats overnight hour offsets accurately", () => {
+    expect(formatHourOffset(0)).toBe("17:00 (D)");
+    expect(formatHourOffset(7)).toBe("00:00 (D+1)");
+    expect(formatHourOffset(14)).toBe("07:00 (D+1)");
   });
 });

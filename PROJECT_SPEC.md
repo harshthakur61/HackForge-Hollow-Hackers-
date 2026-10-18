@@ -34,6 +34,39 @@ where every dollar sits. Goal: maximise net yield minus fees and penalties while
 - Policy mode "cost_optimal": no repo breaking; shortfall is covered by overdraft. Cost accrues hourly: overdraft_balance * overdraft_apr/100/365/24, using the balance after that hour's flow. The overdraft is repaid at 08:00 maturity.
 - Payouts are always honored in both modes. Track overdraft events separately.
 
+## Strategic Sleeve Conventions (Tier 2 Bonds & Tier 3 Equities)
+- Operating pool (S0 to S6, nightly, replenished) is unchanged. The sleeve is separate
+  capital, SLEEVE_USD default 50,000,000, invested at the start of the replay window and held
+  (buy and hold, no rebalancing, zero transaction costs because the dataset has none).
+- Window: from 17:00 of the first night that has forecasts to the 08:00 settlement of the last
+  night, valued every hour including daytime.
+- Repo part: rolled nightly, interest per night = balance * repo_apy/100/365 under the ACCRUAL
+  convention, credited and compounded at 08:00 maturity.
+- Bond part: units = allocation / (bond_price_index/100). Clean mark-to-market from
+  tier2_bond_price_index plus carry accrued hourly as yield_pct/100/8760 on the previous clean
+  value, kept in a separate accrued-carry bucket (not compounded). Report clean value and carry.
+- Equity part: units = allocation / tier3_stock_index_price; value = units * price. Price
+  return only, no dividends (the dataset has none). The "~10% expected APY" is NOT used in any
+  realized figure; keep EQUITY_EXPECTED_APY=10 in config labelled "per problem statement, not
+  in the dataset", used only for the ex-ante break-even.
+- Haircuts come from the market_data columns (bond 2.0, equity 15.0), never hardcoded.
+- Liquidation-adjusted value = repo + bonds*(1 - bond_haircut) + equities*(1 - equity_haircut).
+- Presets, fixed weights (repo/bonds/equity): conservative 100/0/0; income 50/50/0;
+  balanced 40/40/20; growth 20/30/50. Label them "in-sample illustration, not tuned".
+- Default "risk_budget" rule, using only data available at the window start and the constant
+  columns: tolerance T (default 5% of sleeve) is the maximum acceptable stressed loss.
+  Equity stress loss L_e = 1 - (1 - z99*sigma*sqrt(h/252)) * (1 - equity_haircut/100) with
+  sigma from tier3_stock_volatility_pct/100, z99 = 2.326, h = LIQ_HORIZON_DAYS (default 30).
+  Bond stress loss L_b = 1 - (1 - D_mod*YIELD_SHOCK_BP/10000) * (1 - bond_haircut/100) with
+  D_mod from tier2_bond_mod_duration and YIELD_SHOCK_BP default 100.
+  Split the budget 50/50: w_e = 0.5*T/L_e; w_b = min(0.5*T/L_b, 1 - REPO_FLOOR - w_e) with
+  REPO_FLOOR default 0.20; w_r = 1 - w_e - w_b. Return weights and working. Custom weights accepted
+  if sum=1, within [0,1], repo weight >= REPO_FLOOR; otherwise 422.
+- Liquidity waterfall: when night's shortfall exceeds pool cash plus repo balance, then in
+  zero_overdraft mode sell bonds first (haircut), then equities (haircut), and only then
+  overdraft the remainder; in cost_optimal mode sell nothing and overdraft. Record each sale
+  as an event with amount and fee.
+
 ## Stack (do not swap tools without asking)
 Frontend: React, TypeScript, Vite, Tailwind, Recharts, socket.io-client, TanStack Query, Zustand.
 Backend: Node 20, Express, Socket.IO, zod, pg, dotenv, cors, tsx.

@@ -1,28 +1,33 @@
 /**
- * App.tsx: Root dashboard layout wiring all Reserve Juggler components:
- * TopBar, Controls, BalanceCards, ReserveGauge, NightChart, KpiStrip,
- * StrategyRace, ForecastVsActual, DecisionLog, and EventFeed.
+ * App.tsx: Root application component.
+ * - Initializes singleton WebSocket connection and Zustand store at root (survives routing)
+ * - Holds memory-only theme state (no localStorage / sessionStorage)
+ * - Configures React Router with routes: Live Treasury, Strategy Performance, Stress Lab, Decision Log, Methodology
+ * - Enforces AppShell layout with permanent disclaimer banner, persistent desktop sidebar, and mobile drawer
  */
 
 import React, { useState, useEffect } from "react";
-import { TopBar } from "./components/TopBar";
-import { Controls } from "./components/Controls";
-import { BalanceCards } from "./components/BalanceCards";
-import { ReserveGauge } from "./components/ReserveGauge";
-import { NightChart } from "./components/NightChart";
-import { KpiStrip } from "./components/KpiStrip";
-import { StrategyRace } from "./components/StrategyRace";
-import { ForecastVsActual } from "./components/ForecastVsActual";
-import { DecisionLog } from "./components/DecisionLog";
-import { EventFeed } from "./components/EventFeed";
+import { HashRouter, Routes, Route, Navigate } from "react-router-dom";
 import { useReplaySocket } from "./hooks/useReplaySocket";
+import AppShell from "./components/common/AppShell";
+import LiveTreasuryPage from "./pages/LiveTreasuryPage";
+import StrategicSleevePage from "./pages/StrategicSleevePage";
+import StrategyPerformancePage from "./pages/StrategyPerformancePage";
+import StressLabPage from "./pages/StressLabPage";
+import DecisionLogPage from "./pages/DecisionLogPage";
+import MethodologyPage from "./pages/MethodologyPage";
 
 export const App: React.FC = () => {
-  // Initialize singleton socket connection
+  // Initialize singleton WebSocket connection at root
   useReplaySocket();
 
-  // Dark mode by default, toggleable without localStorage
-  const [isDarkMode, setIsDarkMode] = useState<boolean>(true);
+  // Dark mode by default, toggleable in memory only (no localStorage or sessionStorage)
+  const [isDarkMode, setIsDarkMode] = useState<boolean>(() => {
+    if (typeof window !== "undefined" && window.matchMedia) {
+      return window.matchMedia("(prefers-color-scheme: dark)").matches;
+    }
+    return false;
+  });
 
   useEffect(() => {
     if (isDarkMode) {
@@ -37,48 +42,19 @@ export const App: React.FC = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background text-foreground flex flex-col font-sans transition-colors duration-200">
-      <TopBar isDarkMode={isDarkMode} onToggleTheme={toggleTheme} />
-
-      <main className="flex-1 max-w-7xl w-full mx-auto p-4 sm:p-6 space-y-5">
-        {/* Playback Controls & Policy Parameter Settings */}
-        <Controls />
-
-        {/* Real-time Balances & Sweep Allocation */}
-        <BalanceCards />
-
-        {/* Current Night Reserve vs Quantile Forecasts Gauge */}
-        <ReserveGauge />
-
-        {/* Live Overnight Progression & Cumulative Performance Strip */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 items-start">
-          <NightChart />
-          <div className="space-y-4">
-            <KpiStrip />
-          </div>
-        </div>
-
-        {/* Strategy Performance Comparison & Risk Coverage Charts */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-          <StrategyRace />
-          <ForecastVsActual />
-        </div>
-
-        {/* Historical Audit Trail & Operational Events */}
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-          <div className="lg:col-span-2">
-            <DecisionLog />
-          </div>
-          <div className="lg:col-span-1">
-            <EventFeed />
-          </div>
-        </div>
-      </main>
-
-      <footer className="border-t border-border py-4 text-center text-xs text-muted-foreground">
-        Reserve Juggler v1.0.0 — Pure deterministic Python policy engine with real-time Node orchestration.
-      </footer>
-    </div>
+    <HashRouter>
+      <AppShell isDarkMode={isDarkMode} onToggleTheme={toggleTheme}>
+        <Routes>
+          <Route path="/" element={<LiveTreasuryPage />} />
+          <Route path="/sleeve" element={<StrategicSleevePage />} />
+          <Route path="/strategies" element={<StrategyPerformancePage />} />
+          <Route path="/stress" element={<StressLabPage />} />
+          <Route path="/decisions" element={<DecisionLogPage />} />
+          <Route path="/methodology" element={<MethodologyPage />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </AppShell>
+    </HashRouter>
   );
 };
 

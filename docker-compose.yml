@@ -41,6 +41,24 @@ services:
       retries: 5
       start_period: 5s
 
+  bootstrap:
+    build:
+      context: .
+      dockerfile: engine/Dockerfile
+    container_name: hackforge-bootstrap
+    profiles:
+      - bootstrap
+    environment:
+      - DATABASE_URL=postgresql://juggler:juggler@postgres:5432/treasury
+      - POOL_USD=100000000.0
+      - ACCRUAL=overnight_1d
+      - POLICY_MODE=zero_overdraft
+      - MODEL_FOR_POLICY=B1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["python", "-m", "engine.scripts.bootstrap"]
+
   server:
     build:
       context: .

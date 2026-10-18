@@ -157,6 +157,172 @@ Returns decision audit log rows with reason strings.
 }
 ```
 
+### 1.8 `POST /stress/night` (or `/api/stress/night`)
+Simulates synthetic liquidity stress scenarios applied strictly to flows after the 17:00 decision for a chosen night.
+- **Request Body**:
+```json
+{
+  "night_date": "2026-10-03",
+  "scenario": "withdrawal_surge",
+  "params": {
+    "m": 2.0,
+    "hour_from": 3,
+    "hour_to": 9
+  },
+  "strategy": "S4_policy_zero_overdraft",
+  "mode": "zero_overdraft",
+  "informed": false
+}
+```
+- **Response `200 OK`**:
+```json
+{
+  "night_date": "2026-10-03",
+  "scenario": "withdrawal_surge",
+  "params": { "m": 2.0, "hour_from": 3, "hour_to": 9 },
+  "strategy": "S4_policy_zero_overdraft",
+  "mode": "zero_overdraft",
+  "informed": false,
+  "baseline_decision": { ... },
+  "stressed_decision": { ... },
+  "baseline_result": { "interest": ..., "break_fee": ..., "net_pnl": ... },
+  "stressed_result": { "interest": ..., "break_fee": ..., "net_pnl": ... },
+  "deltas": { "net_pnl": -..., "break_fee": ..., "overdraft_cost": ..., ... },
+  "baseline_trace": [ ... ],
+  "stressed_trace": [ ... ]
+}
+```
+- **Error `422 Unprocessable Entity`**: Parameter out of allowed bounds.
+
+### 1.9 `POST /stress/batch` (or `/api/stress/batch`)
+Runs synthetic liquidity stress scenarios across evaluation nights for strategies S1 through S6.
+- **Request Body**:
+```json
+{
+  "scenario": "withdrawal_surge",
+  "params": {
+    "m": 2.0,
+    "hour_from": 3,
+    "hour_to": 9
+  },
+  "informed": false,
+  "night_filter": "fri_sat"
+}
+```
+- **Response `200 OK`**:
+```json
+{
+  "scenario": "withdrawal_surge",
+  "params": { "m": 2.0, "hour_from": 3, "hour_to": 9 },
+  "informed": false,
+  "night_filter": "fri_sat",
+  "nights_count": 88,
+  "summary_text": "Across 88 nights under withdrawal_surge, the policy (S4) broke repo on 4 of 88 nights and paid $18,450.00 in fees with 0 overdraft nights.",
+  "results": [
+    {
+      "strategy": "S1_fixed_10",
+      "net_pnl": 0.0,
+      "break_fee": 0.0,
+      "overdraft_cost": 0.0,
+      "repo_break_nights": 0,
+      "overdraft_nights": 0,
+      "worst_shortfall": 0.0,
+      "baseline_net_pnl": 0.0,
+      "delta_net_pnl": 0.0
+    }
+  ]
+}
+```
+
+### 1.10 `GET /sleeve/config` (or `/api/sleeve/config`)
+Returns default parameters, presets, and ex-ante risk-budget working calculations.
+- **Response `200 OK`**:
+```json
+{
+  "sleeve_usd": 50000000.0,
+  "presets": {
+    "conservative": { "repo": 1.0, "bonds": 0.0, "equity": 0.0 },
+    "income": { "repo": 0.5, "bonds": 0.5, "equity": 0.0 },
+    "balanced": { "repo": 0.4, "bonds": 0.4, "equity": 0.2 },
+    "growth": { "repo": 0.2, "bonds": 0.3, "equity": 0.5 }
+  },
+  "preset_labels": {
+    "conservative": "in-sample illustration, not tuned",
+    "income": "in-sample illustration, not tuned",
+    "balanced": "in-sample illustration, not tuned",
+    "growth": "in-sample illustration, not tuned"
+  },
+  "parameters": {
+    "tolerance_t": 0.05,
+    "z99": 2.326,
+    "liq_horizon_days": 30,
+    "yield_shock_bp": 100.0,
+    "repo_floor": 0.2,
+    "equity_expected_apy": 10.0
+  },
+  "risk_budget_working": {
+    "T": 0.05,
+    "z99": 2.326,
+    "h_days": 30,
+    "sigma": 0.18,
+    "equity_haircut_pct": 15.0,
+    "L_e": 0.27279,
+    "D_mod": 1.92,
+    "yield_shock_bp": 100.0,
+    "bond_haircut_pct": 2.0,
+    "L_b": 0.038816,
+    "repo_floor": 0.2,
+    "weights": { "repo": 0.26429, "bonds": 0.644064, "equity": 0.091646 }
+  }
+}
+```
+
+### 1.11 `GET /sleeve/path` (or `/api/sleeve/path`)
+Calculates the hourly mark-to-market path and summary statistics for a given preset or custom weights.
+- **Query Parameters**:
+  - `preset`: e.g. `"risk_budget"`, `"conservative"`, `"income"`, `"balanced"`, `"growth"`
+  - `weights`: e.g. `"0.2643,0.6441,0.0916"` or `"repo:0.2643,bonds:0.6441,equity:0.0916"`
+  - `sleeve_usd`: float (default `50000000.0`)
+  - `through`: Optional cutoff date (YYYY-MM-DD)
+- **Response `200 OK`**:
+```json
+{
+  "preset": "risk_budget",
+  "sleeve_usd": 50000000.0,
+  "weights": { "repo": 0.26429, "bonds": 0.644064, "equity": 0.091646 },
+  "path": [
+    {
+      "ts": "2026-02-26T17:00:00",
+      "repo_mv": 13214500.0,
+      "bond_clean_mv": 32203200.0,
+      "bond_carry": 0.0,
+      "equity_mv": 4582300.0,
+      "total_mv": 50000000.0,
+      "benchmark_mv": 50000000.0,
+      "excess_vs_repo": 0.0,
+      "drawdown_from_peak": 0.0
+    }
+  ],
+  "summary": {
+    "total_return": -0.00157,
+    "annualised_return": -0.00186,
+    "pnl": -78619.49,
+    "excess_pnl_vs_repo": -1802886.66,
+    "annualised_volatility_daily": 0.0215,
+    "max_drawdown_amount": 1018933.11,
+    "max_drawdown_pct": 2.02,
+    "worst_24h_change": -370513.18,
+    "liquidation_adjusted_end": 48600000.0,
+    "liquidation_adjusted_worst": 47900000.0,
+    "break_even_ex_ante_years": { "bonds": 142.86, "equity": 2.61 },
+    "break_even_ex_post_years": { "bonds": null, "equity": null }
+  }
+}
+```
+
+### 1.12 `GET /sleeve/compare?through=YYYY-MM-DD` (or `/api/sleeve/compare`)
+Returns multi-strategy comparison summary table across `risk_budget` and the 4 presets.
+
 ---
 
 ## 2. WebSocket Protocol (Node Gateway Port 4000)
@@ -165,20 +331,21 @@ Returns decision audit log rows with reason strings.
 
 | Event | Payload | Description |
 |:---|:---|:---|
-| `replay:start` | `{ fromNight?: string }` | Start replay clock from specified date (default: first forecast night) |
+| `replay:start` | `{ fromNight?: string, sleeve_preset?: string, sleeve_weights?: object, sleeve_usd?: number }` | Start replay clock from specified date (only while idle) |
 | `replay:pause` | `{}` | Pause replay clock |
 | `replay:resume` | `{}` | Resume replay clock |
 | `replay:speed` | `{ tickMs: number }` | Adjust tick interval in milliseconds |
 | `replay:seek` | `{ nightDate: string }` | Seek replay clock to 17:00 of specified night |
 | `replay:reset` | `{}` | Reset replay to beginning |
-| `config:set` | `{ strategy?: string, mode?: string, quantile?: number, pool?: number }` | Queues config update for next night |
+| `config:set` | `{ strategy?: string, mode?: string, quantile?: number, pool?: number, sleeve_preset?: string, sleeve_weights?: object, sleeve_usd?: number }` | Queues config update (sleeve updates accepted only while idle) |
 
 ### 2.2 Server to Client Messages
 
 | Event | Payload | Description |
 |:---|:---|:---|
-| `status` | `{ state, simTime, tickMs, strategy, mode, nightDate }` | Clock status broadcast on change / connect |
-| `tick` | `{ ts, phase: "day"\|"night", simulated: boolean, deposits, withdrawals, net_flow, balances: { cash, repo, overdraft }, repo_apy }` | Hourly tick (emitted once per `tickMs`) |
+| `status` | `{ state, simTime, tickMs, strategy, mode, nightDate, sleeve?: object }` | Clock status broadcast on change / connect |
+| `tick` | `{ ts, phase: "day"\|"night", simulated: boolean, deposits, withdrawals, net_flow, balances: { cash, repo, overdraft }, repo_apy, sleeve?: { repo, bonds, equities, carry, total, benchmark, cum_excess } }` | Hourly tick (emitted once per `tickMs`). `sleeve` field is OPTIONAL. |
 | `decision` | `{ night_date, decision, forecasts, pool, q_star }` | Emitted at 17:00 when sweep decision executes |
-| `event` | `{ ts, type: "repo_break"\|"overdraft"\|"alert", amount, fee, message }` | Emitted when repo breaks or overdraft occurs |
-| `settlement`| `{ night_date, interest, break_fee, overdraft_cost, net_pnl, actual_required_usd, forecast_buffer_usd, covered, cumulative }` | Emitted at 08:00 when repo matures |
+| `event` | `{ ts, type: "repo_break"\|"bond_sale"\|"equity_sale"\|"overdraft"\|"alert", amount, fee, message }` | Emitted when repo breaks, sleeve assets are liquidated, or overdraft occurs |
+| `settlement`| `{ night_date, interest, break_fee, overdraft_cost, net_pnl, actual_required_usd, forecast_buffer_usd, covered, cumulative, sleeve?: object }` | Emitted at 08:00 when repo matures |
+

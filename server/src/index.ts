@@ -27,6 +27,12 @@ import {
   SettlementEvent,
   StrategyKpi,
   ConfigSetPayloadSchema,
+  StressNightResponseSchema,
+  StressBatchResponseSchema,
+  SleeveConfigResponseSchema,
+  SleevePathResponseSchema,
+  SleeveCompareResponseSchema,
+  SleeveHourlyRow,
 } from "./contract";
 
 // Load environment variables
@@ -81,6 +87,9 @@ interface ReplayState {
   quantile?: number;
   pool: number;
   nightDate: string;
+  sleevePreset?: string;
+  sleeveWeights?: { repo: number; bonds: number; equity: number };
+  sleeveUsd?: number;
   queuedConfig: {
     strategy?: string;
     mode?: "zero_overdraft" | "cost_optimal";
@@ -98,6 +107,9 @@ const replayState: ReplayState = {
   quantile: undefined,
   pool: 100000000.0,
   nightDate: "2026-02-26",
+  sleevePreset: undefined,
+  sleeveWeights: undefined,
+  sleeveUsd: undefined,
   queuedConfig: {},
 };
 
@@ -105,6 +117,43 @@ let replayInterval: NodeJS.Timeout | null = null;
 let currentNightDetail: NightDetailResponse | null = null;
 let currentForecasts: ForecastResponse | null = null;
 const prefetchCache = new Map<string, NightDetailResponse>();
+
+let precomputedSleevePath: SleeveHourlyRow[] | null = null;
+const sleevePathMap = new Map<string, SleeveHourlyRow>();
+
+async function loadSleevePathIfNeeded() {
+  if (!replayState.sleevePreset && !replayState.sleeveWeights && !replayState.sleeveUsd) {
+    precomputedSleevePath = null;
+    sleevePathMap.clear();
+    return;
+  }
+  const params = new URLSearchParams();
+  if (replayState.sleevePreset) params.set("preset", replayState.sleevePreset);
+  if (replayState.sleeveWeights) {
+    params.set(
+      "weights",
+      `repo=${replayState.sleeveWeights.repo},bonds=${replayState.sleeveWeights.bonds},equity=${replayState.sleeveWeights.equity}`
+    );
+  }
+  if (replayState.sleeveUsd) params.set("sleeve_usd", replayState.sleeveUsd.toString());
+
+  try {
+    const res = await fetchFromEngine(
+      `${ENGINE_URL}/sleeve/path?${params.toString()}`,
+      SleevePathResponseSchema
+    );
+    precomputedSleevePath = res.path;
+    sleevePathMap.clear();
+    for (const r of res.path) {
+      sleevePathMap.set(r.ts, r);
+      sleevePathMap.set(r.ts.replace(" ", "T"), r);
+    }
+    console.log(`[server] Cached ${res.path.length} hourly sleeve rows for replay.`);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.warn(`[server] Failed to load sleeve path from engine: ${msg}`);
+  }
+}
 
 function getStatusPayload(): ReplayStatus {
   return {
@@ -177,6 +226,26 @@ function addHours(iso: string, hours: number): string {
   return toHourIso(d);
 }
 
+let engineRecoveryInterval: NodeJS.Timeout | null = null;
+function waitForEngineAndResume() {
+  if (engineRecoveryInterval) return;
+  engineRecoveryInterval = setInterval(async () => {
+    try {
+      const res = await fetch(`${ENGINE_URL}/health`);
+      if (res.ok) {
+        if (engineRecoveryInterval) clearInterval(engineRecoveryInterval);
+        engineRecoveryInterval = null;
+        console.log("[server] Engine connection restored! Resuming replay automatically...");
+        replayState.state = "playing";
+        broadcastStatus();
+        startReplayTimer();
+      }
+    } catch {
+      // Engine still offline
+    }
+  }, 1000);
+}
+
 // Replay Step (Called once per tickMs)
 async function performTick() {
   if (replayState.state !== "playing") return;
@@ -227,8 +296,11 @@ async function performTick() {
         type: "alert",
         amount: 0,
         fee: 0,
-        message: `Failed to load night ${dateStr}: ${msg}`,
+        message: `Engine down: Failed to load night ${dateStr}: ${msg}`,
       });
+      replayState.state = "paused";
+      broadcastStatus();
+      waitForEngineAndResume();
       return;
     }
 
@@ -264,6 +336,20 @@ async function performTick() {
   const mRow = marketDataMap.get(currentTs);
   const repoApy = mRow ? mRow.tier1_repo_rate_apy : 4.05;
 
+  let sleeveTickData: ReplayTick["sleeve"] = undefined;
+  if (sleevePathMap.has(currentTs)) {
+    const sl = sleevePathMap.get(currentTs)!;
+    sleeveTickData = {
+      repo: sl.repo_mv,
+      bonds: sl.bond_clean_mv,
+      equities: sl.equity_mv,
+      carry: sl.bond_carry,
+      total: sl.total_mv,
+      benchmark: sl.benchmark_mv,
+      cum_excess: sl.excess_vs_repo,
+    };
+  }
+
   const isNightHour = hour >= 17 || hour <= 7;
 
   if (isNightHour && currentNightDetail) {
@@ -291,6 +377,7 @@ async function performTick() {
           overdraft: traceRow.overdraft,
         },
         repo_apy: repoApy,
+        ...(sleeveTickData ? { sleeve: sleeveTickData } : {}),
       };
       io.emit("tick", tickPayload);
 
@@ -320,6 +407,7 @@ async function performTick() {
         overdraft: 0.0,
       },
       repo_apy: repoApy,
+      ...(sleeveTickData ? { sleeve: sleeveTickData } : {}),
     };
     io.emit("tick", tickPayload);
   }
@@ -336,6 +424,21 @@ async function performTick() {
         cumulativeMap[s.strategy] = s;
       }
 
+      let sleeveSettlementData: Record<string, any> | undefined = undefined;
+      if (sleevePathMap.has(currentTs)) {
+        const sl = sleevePathMap.get(currentTs)!;
+        sleeveSettlementData = {
+          total_mv: sl.total_mv,
+          repo_mv: sl.repo_mv,
+          bond_clean_mv: sl.bond_clean_mv,
+          bond_carry: sl.bond_carry,
+          equity_mv: sl.equity_mv,
+          benchmark_mv: sl.benchmark_mv,
+          cum_excess: sl.excess_vs_repo,
+          pnl: sl.total_mv - (replayState.sleeveUsd || 50000000.0),
+        };
+      }
+
       const settlementPayload: SettlementEvent = {
         night_date: replayState.nightDate,
         interest: currentNightDetail.result.interest,
@@ -348,6 +451,7 @@ async function performTick() {
           currentNightDetail.actual_required_usd <=
           currentNightDetail.decision.buffer_usd,
         cumulative: cumulativeMap,
+        ...(sleeveSettlementData ? { sleeve: sleeveSettlementData } : {}),
       };
 
       io.emit("settlement", settlementPayload);
@@ -361,6 +465,17 @@ async function performTick() {
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`Failed to produce settlement at 08:00 for ${replayState.nightDate}:`, msg);
+      io.emit("event", {
+        ts: currentTs,
+        type: "alert",
+        amount: 0,
+        fee: 0,
+        message: `Engine down: Failed to settle ${replayState.nightDate}: ${msg}`,
+      });
+      replayState.state = "paused";
+      broadcastStatus();
+      waitForEngineAndResume();
+      return;
     }
   }
 
@@ -430,7 +545,43 @@ io.on("connection", (socket: Socket) => {
   // Send initial status on connect
   socket.emit("status", getStatusPayload());
 
-  socket.on("replay:start", async (payload?: { fromNight?: string }) => {
+  socket.on("replay:start", async (payload?: {
+    fromNight?: string;
+    sleevePreset?: string;
+    sleeve_preset?: string;
+    sleeveWeights?: any;
+    sleeve_weights?: any;
+    sleeveUsd?: number;
+    sleeve_usd?: number;
+  }) => {
+    const reqPreset = payload?.sleevePreset || payload?.sleeve_preset;
+    const reqWeights = payload?.sleeveWeights || payload?.sleeve_weights;
+    const reqUsd = payload?.sleeveUsd || payload?.sleeve_usd;
+
+    if (
+      replayState.state !== "idle" &&
+      (reqPreset !== undefined || reqWeights !== undefined || reqUsd !== undefined)
+    ) {
+      socket.emit("event", {
+        ts: replayState.simTime,
+        type: "alert",
+        amount: 0,
+        fee: 0,
+        message: "Cannot modify sleeve configuration while replay is active. Reset required.",
+      });
+      return;
+    }
+
+    if (replayState.state === "idle") {
+      if (reqPreset !== undefined) replayState.sleevePreset = reqPreset;
+      if (reqWeights !== undefined) replayState.sleeveWeights = reqWeights;
+      if (reqUsd !== undefined) replayState.sleeveUsd = reqUsd;
+      if (!replayState.sleevePreset && !replayState.sleeveWeights) {
+        replayState.sleevePreset = "risk_budget";
+      }
+      await loadSleevePathIfNeeded();
+    }
+
     let targetNight = forecastNightsList[0] || "2026-02-26";
     if (payload?.fromNight && forecastNightsList.includes(payload.fromNight)) {
       targetNight = payload.fromNight;
@@ -516,11 +667,16 @@ io.on("connection", (socket: Socket) => {
     replayState.simTime = `${firstNight}T17:00:00`;
     replayState.nightDate = firstNight;
     replayState.queuedConfig = {};
+    replayState.sleevePreset = undefined;
+    replayState.sleeveWeights = undefined;
+    replayState.sleeveUsd = undefined;
+    precomputedSleevePath = null;
+    sleevePathMap.clear();
     currentNightDetail = null;
     broadcastStatus();
   });
 
-  socket.on("config:set", (payload: unknown) => {
+  socket.on("config:set", async (payload: unknown) => {
     try {
       const parsed = ConfigSetPayloadSchema.parse(payload);
       if (parsed.strategy) replayState.queuedConfig.strategy = parsed.strategy;
@@ -528,6 +684,27 @@ io.on("connection", (socket: Socket) => {
       if (parsed.quantile !== undefined)
         replayState.queuedConfig.quantile = parsed.quantile;
       if (parsed.pool !== undefined) replayState.queuedConfig.pool = parsed.pool;
+
+      if (
+        parsed.sleeve_preset !== undefined ||
+        parsed.sleeve_weights !== undefined ||
+        parsed.sleeve_usd !== undefined
+      ) {
+        if (replayState.state !== "idle") {
+          socket.emit("event", {
+            ts: replayState.simTime,
+            type: "alert",
+            amount: 0,
+            fee: 0,
+            message: "Cannot modify sleeve configuration while replay is active. Reset required.",
+          });
+          return;
+        }
+        replayState.sleevePreset = parsed.sleeve_preset;
+        replayState.sleeveWeights = parsed.sleeve_weights as any;
+        replayState.sleeveUsd = parsed.sleeve_usd;
+        await loadSleevePathIfNeeded();
+      }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
       socket.emit("event", {
@@ -618,6 +795,91 @@ app.get("/api/forecast/:date", async (req, res) => {
       ForecastResponseSchema
     );
     res.json(forecast);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.post("/api/stress/night", async (req, res) => {
+  try {
+    const engineResp = await fetch(`${ENGINE_URL}/stress/night`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const status = engineResp.status;
+    const data = await engineResp.json();
+    if (!engineResp.ok) {
+      return res.status(status).json(data);
+    }
+    const parsed = StressNightResponseSchema.parse(data);
+    res.json(parsed);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.post("/api/stress/batch", async (req, res) => {
+  try {
+    const engineResp = await fetch(`${ENGINE_URL}/stress/batch`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req.body),
+    });
+    const status = engineResp.status;
+    const data = await engineResp.json();
+    if (!engineResp.ok) {
+      return res.status(status).json(data);
+    }
+    const parsed = StressBatchResponseSchema.parse(data);
+    res.json(parsed);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.get("/api/sleeve/config", async (req, res) => {
+  try {
+    const config = await fetchFromEngine(
+      `${ENGINE_URL}/sleeve/config`,
+      SleeveConfigResponseSchema
+    );
+    res.json(config);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.get("/api/sleeve/path", async (req, res) => {
+  try {
+    const params = new URLSearchParams();
+    if (req.query.preset) params.set("preset", String(req.query.preset));
+    if (req.query.weights) params.set("weights", String(req.query.weights));
+    if (req.query.sleeve_usd) params.set("sleeve_usd", String(req.query.sleeve_usd));
+
+    const pathRes = await fetchFromEngine(
+      `${ENGINE_URL}/sleeve/path?${params.toString()}`,
+      SleevePathResponseSchema
+    );
+    res.json(pathRes);
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    res.status(502).json({ error: msg });
+  }
+});
+
+app.get("/api/sleeve/compare", async (req, res) => {
+  try {
+    const through = req.query.through ? `?through=${req.query.through}` : "";
+    const comp = await fetchFromEngine(
+      `${ENGINE_URL}/sleeve/compare${through}`,
+      SleeveCompareResponseSchema
+    );
+    res.json(comp);
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     res.status(502).json({ error: msg });

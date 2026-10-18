@@ -8,10 +8,19 @@ import {
   NightsResponseSchema,
   KpisResponseSchema,
   DecisionsResponseSchema,
+  HealthResponseSchema,
   NightsResponse,
   KpisResponse,
   DecisionsResponse,
   ConfigResponse,
+  HealthResponse,
+  SleeveConfigResponseSchema,
+  SleevePathResponseSchema,
+  SleeveCompareResponseSchema,
+  SleeveConfigResponse,
+  SleevePathResponse,
+  SleeveCompareResponse,
+  SleeveWeights,
 } from "../contract";
 
 const API_URL = import.meta.env.VITE_API_URL || "http://localhost:4000";
@@ -23,6 +32,14 @@ async function fetchJson<T>(url: string, schema: { parse: (val: unknown) => T })
   }
   const data = await resp.json();
   return schema.parse(data);
+}
+
+export function useHealthQuery() {
+  return useQuery<HealthResponse>({
+    queryKey: ["health"],
+    queryFn: () => fetchJson(`${API_URL}/api/health`, HealthResponseSchema),
+    refetchInterval: 10000,
+  });
 }
 
 export function useNightsQuery() {
@@ -43,12 +60,13 @@ export function useKpisQuery(through?: string) {
   });
 }
 
-export function useDecisionsQuery(limit: number = 50, strategy?: string) {
+export function useDecisionsQuery(limit: number = 50, strategy?: string, before?: string) {
   const params = new URLSearchParams({ limit: limit.toString() });
   if (strategy) params.set("strategy", strategy);
+  if (before) params.set("before", before);
 
   return useQuery<DecisionsResponse>({
-    queryKey: ["decisions", limit, strategy],
+    queryKey: ["decisions", limit, strategy, before],
     queryFn: () =>
       fetchJson(`${API_URL}/api/decisions?${params.toString()}`, DecisionsResponseSchema),
     refetchOnWindowFocus: false,
@@ -74,3 +92,37 @@ export function useConfigQuery() {
     staleTime: Infinity,
   });
 }
+
+export function useSleeveConfigQuery() {
+  return useQuery<SleeveConfigResponse>({
+    queryKey: ["sleeve-config"],
+    queryFn: () => fetchJson(`${API_URL}/api/sleeve/config`, SleeveConfigResponseSchema),
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useSleevePathQuery(preset?: string, weights?: SleeveWeights, sleeveUsd?: number) {
+  const params = new URLSearchParams();
+  if (preset) params.set("preset", preset);
+  if (weights) {
+    params.set("weights", `repo=${weights.repo},bonds=${weights.bonds},equity=${weights.equity}`);
+  }
+  if (sleeveUsd) params.set("sleeve_usd", sleeveUsd.toString());
+
+  return useQuery<SleevePathResponse>({
+    queryKey: ["sleeve-path", preset, weights, sleeveUsd],
+    queryFn: () => fetchJson(`${API_URL}/api/sleeve/path?${params.toString()}`, SleevePathResponseSchema),
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useSleeveCompareQuery(through?: string) {
+  const queryParam = through ? `?through=${through}` : "";
+  return useQuery<SleeveCompareResponse>({
+    queryKey: ["sleeve-compare", through],
+    queryFn: () => fetchJson(`${API_URL}/api/sleeve/compare${queryParam}`, SleeveCompareResponseSchema),
+    refetchOnWindowFocus: false,
+  });
+}
+
